@@ -44,6 +44,7 @@ class BeamValidationTests(unittest.TestCase):
         )
         result = solve_beam(beam)
         self.assertAlmostEqual(result.reaction_a_kip, 1.0, places=6)
+        self.assertAlmostEqual(result.fixed_moment_kip_ft, 10.0, places=6)
         self.assertAlmostEqual(result.peak_moment_kip_ft, 10.0, places=6)
         self.assertAlmostEqual(result.peak_deflection_x_ft, 10.0, places=3)
 

@@ -10,3 +10,6 @@
 - Reported application startup crashing because update_results referenced nonexistent BeamResult.reaction_b instead of reaction_b_kip.
 - Changed beam_designer.py to check the declared reaction_b_kip field before rendering the right support result.
 - Worked: yes; Python compilation and all five unit tests pass, and the stale attribute reference is gone.
+- Asked to run every validation case described in spec.md and compare expected with actual calculations.
+- Changed the cantilever result handling to report the fixed-end reaction moment with its physical reaction sign; added an assertion for that sign. Ran the reference, self-weight, point-load, cantilever, lumber, custom-section, overhang, and metric-equivalent scenarios against closed-form expectations.
+- Worked: yes; all eight scenarios match expected values, all five unit tests pass, and Python compilation succeeds.

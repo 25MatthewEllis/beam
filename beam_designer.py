@@ -274,7 +274,7 @@ def solve_beam(beam: BeamInput) -> BeamResult:
         deflection,
         reaction_a,
         reaction_b,
-        fixed_moment,
+        -fixed_moment if fixed_moment is not None else None,
         peak_shear,
         peak_moment,
         peak_moment_x,
