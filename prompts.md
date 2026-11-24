@@ -13,3 +13,6 @@
 - Asked to run every validation case described in spec.md and compare expected with actual calculations.
 - Changed the cantilever result handling to report the fixed-end reaction moment with its physical reaction sign; added an assertion for that sign. Ran the reference, self-weight, point-load, cantilever, lumber, custom-section, overhang, and metric-equivalent scenarios against closed-form expectations.
 - Worked: yes; all eight scenarios match expected values, all five unit tests pass, and Python compilation succeeds.
+- Asked to update spec.md with a File menu offering Save/Open for support type, span, section, deflection limit, and loads, removing "Saving designs" from Out of scope first.
+- Changed spec.md to add File Operations requirements, persistence of custom section properties and load details, and a default L/360 deflection limit retained on save. The current spec had no Out of scope section or "Saving designs" entry to remove.
+- Worked: yes; the requested requirements are documented in spec.md.

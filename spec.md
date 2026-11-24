@@ -56,6 +56,17 @@ load combinations.
 - Beam self-weight: checkbox enabled by default. Include catalog or custom
   section weight per length in analysis when enabled and report it separately
   from applied loads.
+- Deflection limit: use L/360 by default and retain the limit used for
+  comparisons when saving a beam.
+
+## File Operations
+
+- Provide a File menu with Save and Open commands.
+- Save a beam's support type, span, selected section and custom section
+  properties when applicable, deflection limit, and all applied loads.
+- Preserve load type, magnitude, position or interval, and direction.
+- Open a saved beam by restoring its inputs and recalculating the results and
+  diagrams.
 
 ## Section Data
 
