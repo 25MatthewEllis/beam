@@ -31,3 +31,6 @@
 - Asked why the calculation-sheet PDF could not be saved and provided a screenshot of the Save dialog.
 - Explained that the Save As filename field is blank, so macOS disables Save; recommended entering a filename such as `Beam-Calculation.pdf`.
 - Worked: yes; the screenshot identifies the missing filename, and no application change is needed.
+- Asked to push all project work to GitHub.
+- Found no configured Git remote and committed the staged index.html together with this activity record; no push occurred because a repository URL is required.
+- Worked: pending the GitHub remote URL.
