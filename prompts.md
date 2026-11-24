@@ -4,3 +4,6 @@
 - Asked to update spec.md to describe a Python desktop app using Tkinter without building anything.
 - Changed spec.md to document the Tkinter desktop product, layout, inputs, analysis, visualization, and validation requirements.
 - Worked: yes; spec.md was updated and no application code was added.
+- Asked to read spec.md and build the Tkinter desktop app using index.html as behavior reference.
+- Changed beam_designer.py with native Tk controls, unit conversion, beam analysis, Canvas diagrams, and PDF/print export; added tests/test_beam_designer.py for reference, point, cantilever, overhang, lumber, and custom-section behavior.
+- Worked: yes; Python compilation succeeded and all five beam analysis unit tests passed.
