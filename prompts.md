@@ -25,3 +25,6 @@
 - Asked to rerun the spec.md validation cases and confirm they still pass.
 - Changed no application code; reran all eight independently checked scenarios and the unit test suite.
 - Worked: yes; all eight scenarios match expected values and all eight unit tests pass.
+- Asked for a short README explaining the app, package requirements, and startup command.
+- Added README.md describing Beam Designer's purpose and exports, noting Python 3 with Tkinter and no third-party packages, and documenting `python3 beam_designer.py`.
+- Worked: yes; README.md contains the requested information.
