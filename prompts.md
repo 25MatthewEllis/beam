@@ -1,3 +1,6 @@
 - Asked to create a top-level AGENTS.md with two instruction lines and commit it.
 - Changed AGENTS.md with the requested two lines; initialized the Git repository because it did not exist.
 - Worked: yes; AGENTS.md was committed successfully.
+- Asked to update spec.md to describe a Python desktop app using Tkinter without building anything.
+- Changed spec.md to document the Tkinter desktop product, layout, inputs, analysis, visualization, and validation requirements.
+- Worked: yes; spec.md was updated and no application code was added.
