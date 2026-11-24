@@ -22,3 +22,6 @@
 - Asked to implement the three spec changes: beam Save/Open, CSV result export, and a calculation-sheet PDF.
 - Changed beam_designer.py with a File menu and versioned JSON save/open, configurable and persisted L/n deflection limit, Excel-compatible CSV output, and a generated multi-page PDF containing inputs, checks, and response diagrams. Added round-trip/export tests.
 - Worked: yes; all eight unit tests pass, Python compilation and Tk startup pass, and GUI smoke tests successfully saved/opened a metric custom overhang beam and exported CSV/PDF.
+- Asked to rerun the spec.md validation cases and confirm they still pass.
+- Changed no application code; reran all eight independently checked scenarios and the unit test suite.
+- Worked: yes; all eight scenarios match expected values and all eight unit tests pass.
