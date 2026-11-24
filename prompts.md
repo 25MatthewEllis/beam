@@ -7,3 +7,6 @@
 - Asked to read spec.md and build the Tkinter desktop app using index.html as behavior reference.
 - Changed beam_designer.py with native Tk controls, unit conversion, beam analysis, Canvas diagrams, and PDF/print export; added tests/test_beam_designer.py for reference, point, cantilever, overhang, lumber, and custom-section behavior.
 - Worked: yes; Python compilation succeeded and all five beam analysis unit tests passed.
+- Reported application startup crashing because update_results referenced nonexistent BeamResult.reaction_b instead of reaction_b_kip.
+- Changed beam_designer.py to check the declared reaction_b_kip field before rendering the right support result.
+- Worked: yes; Python compilation and all five unit tests pass, and the stale attribute reference is gone.

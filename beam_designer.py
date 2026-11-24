@@ -881,7 +881,7 @@ class BeamDesigner(tk.Tk):
         to_stress = lambda x: x / KSI_PER_MPA if self.unit == "metric" else x
 
         self.result_vars["left_reaction"].set(f"{to_force(result.reaction_a_kip):.3f} {force_unit}")
-        if result.reaction_b is not None:
+        if result.reaction_b_kip is not None:
             self.result_vars["right_reaction"].set(f"{to_force(result.reaction_b_kip):.3f} {force_unit}")
         else:
             self.result_vars["right_reaction"].set(
