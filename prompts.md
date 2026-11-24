@@ -16,3 +16,6 @@
 - Asked to update spec.md with a File menu offering Save/Open for support type, span, section, deflection limit, and loads, removing "Saving designs" from Out of scope first.
 - Changed spec.md to add File Operations requirements, persistence of custom section properties and load details, and a default L/360 deflection limit retained on save. The current spec had no Out of scope section or "Saving designs" entry to remove.
 - Worked: yes; the requested requirements are documented in spec.md.
+- Asked to add CSV results export and a printable calculation-sheet PDF to spec.md.
+- Changed spec.md to require an Excel-friendly CSV with x, V, M, deflection, headers, and units, plus a calculation-sheet PDF button with inputs, diagrams, numerical checks, units, and disclaimer.
+- Worked: yes; both export requirements are documented and consistent with the preliminary/no-verdict scope.

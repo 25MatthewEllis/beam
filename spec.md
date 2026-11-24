@@ -110,6 +110,16 @@ load combinations.
 - Provide a print or save-as-PDF workflow using Tk-compatible printing/export
   support or a standard library/process-based system workflow.
 
+## Exports
+
+- Provide an Export Results button that saves a CSV table of position x,
+  internal shear V, bending moment M, and deflection along the beam. Include
+  column headers and units so the file opens clearly in Excel.
+- Provide a Calculation Sheet button that saves a PDF containing the beam
+  diagrams and numerical checks, with the beam inputs listed at the top.
+- Include units and the educational/preliminary disclaimer in the calculation
+  sheet. Present numerical comparisons without an overall pass/fail verdict.
+
 ## Results
 
 The application must show:
