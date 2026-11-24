@@ -28,3 +28,6 @@
 - Asked for a short README explaining the app, package requirements, and startup command.
 - Added README.md describing Beam Designer's purpose and exports, noting Python 3 with Tkinter and no third-party packages, and documenting `python3 beam_designer.py`.
 - Worked: yes; README.md contains the requested information.
+- Asked why the calculation-sheet PDF could not be saved and provided a screenshot of the Save dialog.
+- Explained that the Save As filename field is blank, so macOS disables Save; recommended entering a filename such as `Beam-Calculation.pdf`.
+- Worked: yes; the screenshot identifies the missing filename, and no application change is needed.
