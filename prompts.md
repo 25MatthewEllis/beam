@@ -1,0 +1,3 @@
+- Asked to create a top-level AGENTS.md with two instruction lines and commit it.
+- Changed AGENTS.md with the requested two lines; initialized the Git repository because it did not exist.
+- Worked: yes; AGENTS.md was committed successfully.
