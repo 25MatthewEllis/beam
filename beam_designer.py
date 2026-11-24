@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
+import csv
+import json
 import math
-import shutil
-import subprocess
 import tkinter as tk
 from dataclasses import dataclass, field
 from tkinter import filedialog, messagebox, ttk
-from typing import Iterable, Sequence
+from typing import Sequence
 
 
 FT_PER_M = 3.280839895013123
@@ -111,6 +111,7 @@ class BeamInput:
     section: Section = field(default_factory=lambda: CATALOG["W12x26"])
     loads: tuple[Load, ...] = ()
     include_self_weight: bool = True
+    deflection_limit_denominator: float = 360.0
 
 
 def support_positions(beam: BeamInput) -> tuple[float, float | None]:
@@ -126,6 +127,491 @@ def beam_length_ft(beam: BeamInput) -> float:
     if beam.support == "overhang":
         return beam.left_overhang_ft + beam.span_ft + beam.right_overhang_ft
     return beam.span_ft
+
+
+def validate_beam(beam: BeamInput) -> list[str]:
+    errors = []
+    length = beam_length_ft(beam)
+    if not math.isfinite(beam.span_ft) or beam.span_ft <= 0:
+        errors.append("Enter a span greater than zero.")
+    if not math.isfinite(length) or length <= 0:
+        errors.append("Total beam length must be finite and greater than zero.")
+    if beam.support == "overhang":
+        if (not math.isfinite(beam.left_overhang_ft) or beam.left_overhang_ft < 0
+                or not math.isfinite(beam.right_overhang_ft) or beam.right_overhang_ft < 0):
+            errors.append("Overhang lengths must be finite and nonnegative.")
+        elif beam.left_overhang_ft + beam.right_overhang_ft <= 0:
+            errors.append("Set at least one overhang length greater than zero.")
+    if not math.isfinite(beam.section.sx_in3) or beam.section.sx_in3 <= 0:
+        errors.append("Section modulus Sx must be greater than zero.")
+    if not math.isfinite(beam.section.ix_in4) or beam.section.ix_in4 <= 0:
+        errors.append("Moment of inertia Ix must be greater than zero.")
+    if not math.isfinite(beam.section.e_ksi) or beam.section.e_ksi <= 0:
+        errors.append("Elastic modulus E must be greater than zero.")
+    if beam.section.fb_ksi is not None and (
+        not math.isfinite(beam.section.fb_ksi) or beam.section.fb_ksi <= 0
+    ):
+        errors.append("Supplied Fb must be greater than zero.")
+    if not math.isfinite(beam.section.weight_kip_ft) or beam.section.weight_kip_ft < 0:
+        errors.append("Section weight per length must be nonnegative.")
+    if (not math.isfinite(beam.deflection_limit_denominator)
+            or beam.deflection_limit_denominator <= 0):
+        errors.append("Deflection limit denominator must be greater than zero.")
+    for i, load in enumerate(beam.loads, 1):
+        name = f"{'Point' if isinstance(load, PointLoad) else 'Uniform'} load {i}"
+        if isinstance(load, PointLoad):
+            if not math.isfinite(load.magnitude_kip) or load.magnitude_kip <= 0:
+                errors.append(f"{name}: enter a magnitude greater than zero.")
+            if (not math.isfinite(load.position_ft) or load.position_ft < 0
+                    or load.position_ft > length):
+                errors.append(f"{name}: position must be within the beam.")
+        else:
+            if not math.isfinite(load.intensity_kip_ft) or load.intensity_kip_ft <= 0:
+                errors.append(f"{name}: enter an intensity greater than zero.")
+            if (not math.isfinite(load.start_ft) or not math.isfinite(load.end_ft)
+                    or load.start_ft < 0 or load.end_ft > length
+                    or load.end_ft <= load.start_ft):
+                errors.append(f"{name}: interval must be within the beam.")
+    return errors
+
+
+def beam_to_document(
+    beam: BeamInput,
+    section_key: str,
+    unit: str,
+    overhang_side: str,
+) -> dict:
+    if unit not in ("us", "metric"):
+        raise ValueError("Unsupported unit system.")
+    if section_key in CATALOG:
+        section = {"catalog_key": section_key}
+    else:
+        section = {
+            "catalog_key": None,
+            "name": beam.section.name,
+            "sx_in3": beam.section.sx_in3,
+            "ix_in4": beam.section.ix_in4,
+            "e_ksi": beam.section.e_ksi,
+            "fb_ksi": beam.section.fb_ksi,
+            "weight_kip_ft": beam.section.weight_kip_ft,
+            "source": beam.section.source,
+        }
+    loads = []
+    for load in beam.loads:
+        if isinstance(load, PointLoad):
+            loads.append({
+                "type": "point",
+                "magnitude_kip": load.magnitude_kip,
+                "position_ft": load.position_ft,
+                "direction": load.direction,
+            })
+        else:
+            loads.append({
+                "type": "uniform",
+                "intensity_kip_ft": load.intensity_kip_ft,
+                "start_ft": load.start_ft,
+                "end_ft": load.end_ft,
+                "direction": load.direction,
+            })
+    document = {
+        "format": "beam-designer",
+        "version": 1,
+        "unit": unit,
+        "support": beam.support,
+        "span_ft": beam.span_ft,
+        "left_overhang_ft": beam.left_overhang_ft,
+        "right_overhang_ft": beam.right_overhang_ft,
+        "overhang_side": overhang_side,
+        "include_self_weight": beam.include_self_weight,
+        "deflection_limit_denominator": beam.deflection_limit_denominator,
+        "section": section,
+        "loads": loads,
+    }
+    return document
+
+
+def beam_from_document(document: object) -> tuple[BeamInput, str, str, str]:
+    if not isinstance(document, dict) or document.get("format") != "beam-designer":
+        raise ValueError("This is not a Beam Designer file.")
+    if type(document.get("version")) is not int or document.get("version") != 1:
+        raise ValueError("Unsupported Beam Designer file version.")
+
+    unit = document.get("unit")
+    if unit not in ("us", "metric"):
+        raise ValueError("Saved unit system is invalid.")
+    support = document.get("support")
+    if support not in ("simple", "cantilever", "overhang"):
+        raise ValueError("Saved support type is invalid.")
+
+    def number(value: object, label: str, optional: bool = False) -> float | None:
+        if value is None and optional:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"Saved {label} must be a number.")
+        try:
+            result = float(value)
+        except OverflowError as exc:
+            raise ValueError(f"Saved {label} must be finite.") from exc
+        if not math.isfinite(result):
+            raise ValueError(f"Saved {label} must be finite.")
+        return result
+
+    section_data = document.get("section")
+    if not isinstance(section_data, dict):
+        raise ValueError("Saved section data is missing.")
+    section_key = section_data.get("catalog_key")
+    if isinstance(section_key, str):
+        if section_key not in CATALOG:
+            raise ValueError("Saved catalog section is not available.")
+        section = CATALOG[section_key]
+        section_name = section_key
+    elif section_key is None:
+        name = section_data.get("name")
+        source = section_data.get("source", "Custom properties supplied by the user.")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Saved custom section label is missing.")
+        if not isinstance(source, str):
+            raise ValueError("Saved custom section source must be text.")
+        section = Section(
+            name,
+            number(section_data.get("sx_in3"), "Sx"),
+            number(section_data.get("ix_in4"), "Ix"),
+            number(section_data.get("e_ksi"), "E"),
+            number(section_data.get("fb_ksi"), "Fb", optional=True),
+            number(section_data.get("weight_kip_ft"), "weight per length"),
+            source,
+        )
+        section_name = "Custom"
+    else:
+        raise ValueError("Saved section key is invalid.")
+
+    raw_loads = document.get("loads")
+    if not isinstance(raw_loads, list):
+        raise ValueError("Saved loads must be a list.")
+    loads: list[Load] = []
+    for index, item in enumerate(raw_loads, 1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Saved load {index} is invalid.")
+        direction = item.get("direction")
+        if type(direction) is not int or direction not in (-1, 1):
+            raise ValueError(f"Saved load {index} direction is invalid.")
+        if item.get("type") == "point":
+            loads.append(PointLoad(
+                number(item.get("magnitude_kip"), f"load {index} magnitude"),
+                number(item.get("position_ft"), f"load {index} position"),
+                direction,
+            ))
+        elif item.get("type") == "uniform":
+            loads.append(UniformLoad(
+                number(item.get("intensity_kip_ft"), f"load {index} intensity"),
+                number(item.get("start_ft"), f"load {index} start"),
+                number(item.get("end_ft"), f"load {index} end"),
+                direction,
+            ))
+        else:
+            raise ValueError(f"Saved load {index} type is invalid.")
+
+    include_self_weight = document.get("include_self_weight")
+    if not isinstance(include_self_weight, bool):
+        raise ValueError("Saved self-weight setting is invalid.")
+    beam = BeamInput(
+        support=support,
+        span_ft=number(document.get("span_ft"), "span"),
+        left_overhang_ft=number(document.get("left_overhang_ft", 0), "left overhang"),
+        right_overhang_ft=number(document.get("right_overhang_ft", 0), "right overhang"),
+        section=section,
+        loads=tuple(loads),
+        include_self_weight=include_self_weight,
+        deflection_limit_denominator=number(
+            document.get("deflection_limit_denominator"), "deflection limit"
+        ),
+    )
+    errors = validate_beam(beam)
+    if errors:
+        raise ValueError("Saved beam inputs are invalid:\n" + "\n".join(errors))
+    side = document.get("overhang_side", "Right")
+    if side not in ("Left", "Right", "Both"):
+        raise ValueError("Saved overhang side is invalid.")
+    return beam, unit, section_name, side
+
+
+def csv_rows(result: BeamResult, unit: str) -> tuple[list[str], list[list[float]]]:
+    if unit == "metric":
+        headers = ["x (m)", "V (kN)", "M (kN-m)", "deflection (mm)"]
+        rows = [
+            [
+                x / FT_PER_M,
+                v / KIP_PER_KN,
+                m / (KIP_PER_KN * FT_PER_M),
+                d * MM_PER_IN,
+            ]
+            for x, v, m, d in zip(
+                result.xs_ft, result.shear_kip, result.moment_kip_ft, result.deflection_in
+            )
+        ]
+    else:
+        headers = ["x (ft)", "V (kip)", "M (kip-ft)", "deflection (in)"]
+        rows = [
+            list(values)
+            for values in zip(
+                result.xs_ft, result.shear_kip, result.moment_kip_ft, result.deflection_in
+            )
+        ]
+    return headers, rows
+
+
+def _pdf_safe_text(value: object) -> str:
+    text = str(value).encode("ascii", "replace").decode("ascii")
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _pdf_text(x: float, y: float, text: object, size: float = 10) -> str:
+    return f"BT /F1 {size:.1f} Tf {x:.1f} {y:.1f} Td ({_pdf_safe_text(text)}) Tj ET\n"
+
+
+def _pdf_document(pages: Sequence[str]) -> bytes:
+    objects: list[bytes | None] = [None]
+
+    def add(data: bytes) -> int:
+        objects.append(data)
+        return len(objects) - 1
+
+    catalog_id = add(b"")
+    pages_id = add(b"")
+    font_id = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    page_ids = []
+    for page in pages:
+        stream = page.encode("ascii")
+        content_id = add(
+            b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n"
+            + stream + b"\nendstream"
+        )
+        page_ids.append(add(
+            f"<< /Type /Page /Parent {pages_id} 0 R /MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 {font_id} 0 R >> >> "
+            f"/Contents {content_id} 0 R >>".encode("ascii")
+        ))
+    objects[catalog_id] = f"<< /Type /Catalog /Pages {pages_id} 0 R >>".encode("ascii")
+    kids = " ".join(f"{page_id} 0 R" for page_id in page_ids)
+    objects[pages_id] = f"<< /Type /Pages /Kids [{kids}] /Count {len(page_ids)} >>".encode("ascii")
+
+    output = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, obj in enumerate(objects[1:], 1):
+        assert obj is not None
+        offsets.append(len(output))
+        output.extend(f"{index} 0 obj\n".encode("ascii"))
+        output.extend(obj)
+        output.extend(b"\nendobj\n")
+    xref_offset = len(output)
+    output.extend(f"xref\n0 {len(objects)}\n".encode("ascii"))
+    output.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        output.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    output.extend(
+        f"trailer\n<< /Size {len(objects)} /Root {catalog_id} 0 R >>\n"
+        f"startxref\n{xref_offset}\n%%EOF\n".encode("ascii")
+    )
+    return bytes(output)
+
+
+def calculation_sheet_pdf(beam: BeamInput, result: BeamResult, unit: str) -> bytes:
+    length_unit = "m" if unit == "metric" else "ft"
+    force_unit = "kN" if unit == "metric" else "kip"
+    moment_unit = "kN-m" if unit == "metric" else "kip-ft"
+    deflection_unit = "mm" if unit == "metric" else "in"
+    stress_unit = "MPa" if unit == "metric" else "ksi"
+    display_length = (lambda x: x / FT_PER_M) if unit == "metric" else (lambda x: x)
+    display_force = (lambda x: x / KIP_PER_KN) if unit == "metric" else (lambda x: x)
+    display_moment = (
+        (lambda x: x / (KIP_PER_KN * FT_PER_M)) if unit == "metric" else (lambda x: x)
+    )
+    display_deflection = (lambda x: x * MM_PER_IN) if unit == "metric" else (lambda x: x)
+    display_stress = (lambda x: x / KSI_PER_MPA) if unit == "metric" else (lambda x: x)
+    display_sx = (lambda x: x * MM3_PER_IN3) if unit == "metric" else (lambda x: x)
+    display_ix = (lambda x: x * MM4_PER_IN4) if unit == "metric" else (lambda x: x)
+    sx_unit = "mm^3" if unit == "metric" else "in^3"
+    ix_unit = "mm^4" if unit == "metric" else "in^4"
+    line_unit = "kN/m" if unit == "metric" else "kip/ft"
+    display_weight = (
+        (lambda x: x * FT_PER_M / KIP_PER_KN) if unit == "metric" else (lambda x: x)
+    )
+    limit_in = beam.span_ft * 12.0 / beam.deflection_limit_denominator
+    deflection_ratio = result.peak_deflection_in / limit_in
+
+    input_pages: list[str] = []
+    page = ""
+
+    def new_input_page(continued: bool = False) -> None:
+        nonlocal page
+        page = ""
+        page += _pdf_text(48, 752, "BEAM DESIGNER - CALCULATION SHEET", 16)
+        page += _pdf_text(48, 734, "Educational / preliminary only - not for approving real construction.", 9)
+        page += _pdf_text(48, 708, "BEAM INPUTS" + (" (continued)" if continued else ""), 12)
+        input_pages.append("")
+
+    new_input_page()
+    current_y = 687
+
+    def input_row(text: str) -> None:
+        nonlocal page, current_y
+        if current_y < 55:
+            input_pages[-1] = page
+            new_input_page(True)
+            current_y = 687
+        page += _pdf_text(54, current_y, text[:105], 9)
+        current_y -= 14
+
+    support_names = {"simple": "Simply supported", "cantilever": "Cantilever", "overhang": "Overhanging"}
+    input_row(f"Support: {support_names[beam.support]}")
+    input_row(f"Support span: {display_length(beam.span_ft):.4g} {length_unit}")
+    if beam.support == "overhang":
+        input_row(
+            f"Overhangs: left {display_length(beam.left_overhang_ft):.4g} {length_unit}; "
+            f"right {display_length(beam.right_overhang_ft):.4g} {length_unit}"
+        )
+    input_row(f"Section: {beam.section.name}")
+    input_row(
+        f"Sx {display_sx(beam.section.sx_in3):.4g} {sx_unit}; "
+        f"Ix {display_ix(beam.section.ix_in4):.4g} {ix_unit}; "
+        f"E {display_stress(beam.section.e_ksi):.4g} {stress_unit}"
+    )
+    input_row(
+        "Fb: " + (
+            f"{display_stress(beam.section.fb_ksi):.4g} {stress_unit}"
+            if beam.section.fb_ksi is not None else "not supplied"
+        )
+    )
+    input_row(
+        "Self-weight: " + (
+            f"included ({display_weight(beam.section.weight_kip_ft):.4g} {line_unit})"
+            if beam.include_self_weight else "excluded"
+        )
+    )
+    input_row(f"Deflection limit: L/{beam.deflection_limit_denominator:g}")
+    input_row(f"Applied loads: {len(beam.loads)}")
+    for index, load in enumerate(beam.loads, 1):
+        direction = "up" if load.direction > 0 else "down"
+        if isinstance(load, PointLoad):
+            magnitude = display_force(load.magnitude_kip)
+            magnitude_unit = force_unit
+            line = (
+                f"Point {index}: {magnitude:.4g} {magnitude_unit} {direction} at "
+                f"{display_length(load.position_ft):.4g} {length_unit} from left"
+            )
+        else:
+            magnitude = (
+                load.intensity_kip_ft / (KIP_PER_KN / FT_PER_M)
+                if unit == "metric" else load.intensity_kip_ft
+            )
+            magnitude_unit = "kN/m" if unit == "metric" else "kip/ft"
+            line = (
+                f"Uniform {index}: {magnitude:.4g} {magnitude_unit} {direction}, "
+                f"{display_length(load.start_ft):.4g}-{display_length(load.end_ft):.4g} {length_unit}"
+            )
+        input_row(line)
+    input_pages[-1] = page
+
+    summary = _pdf_text(48, 752, "RESULTS AND NUMERICAL CHECKS", 16)
+    summary += _pdf_text(48, 730, "Numerical references only; no overall pass/fail verdict.", 9)
+    summary += _pdf_text(48, 694, "SUPPORT REACTIONS", 12)
+    summary += _pdf_text(
+        54, 674,
+        f"Reaction A: {display_force(result.reaction_a_kip):.4g} {force_unit}", 10,
+    )
+    if result.reaction_b_kip is not None:
+        reaction_b = f"Reaction B: {display_force(result.reaction_b_kip):.4g} {force_unit}"
+    else:
+        reaction_b = (
+            f"Fixed-end moment reaction: {display_moment(result.fixed_moment_kip_ft or 0):.4g} "
+            f"{moment_unit}"
+        )
+    summary += _pdf_text(54, 658, reaction_b, 10)
+    summary += _pdf_text(48, 624, "RESPONSE", 12)
+    summary += _pdf_text(
+        54, 604,
+        f"Maximum |V|: {display_force(result.peak_shear_kip):.4g} {force_unit}", 10,
+    )
+    summary += _pdf_text(
+        54, 588,
+        f"Maximum |M|: {display_moment(result.peak_moment_kip_ft):.4g} {moment_unit}", 10,
+    )
+    summary += _pdf_text(
+        54, 572,
+        f"Maximum |deflection|: {display_deflection(result.peak_deflection_in):.4g} "
+        f"{deflection_unit} at {display_length(result.peak_deflection_x_ft):.4g} {length_unit}", 10,
+    )
+    summary += _pdf_text(
+        54, 556,
+        f"Maximum bending stress: {display_stress(result.peak_stress_ksi):.4g} {stress_unit}", 10,
+    )
+    summary += _pdf_text(48, 520, "COMPARISONS", 12)
+    summary += _pdf_text(
+        54, 500,
+        f"Deflection reference L/{beam.deflection_limit_denominator:g}: "
+        f"{display_deflection(limit_in):.4g} {deflection_unit}; ratio {deflection_ratio:.4g}", 10,
+    )
+    if beam.section.fb_ksi is not None and beam.section.fb_ksi > 0:
+        stress_ratio = result.peak_stress_ksi / beam.section.fb_ksi
+        summary += _pdf_text(
+            54, 484,
+            f"Supplied Fb: {display_stress(beam.section.fb_ksi):.4g} {stress_unit}; "
+            f"stress ratio {stress_ratio:.4g}", 10,
+        )
+    else:
+        summary += _pdf_text(54, 484, "Supplied Fb: unavailable; stress ratio not calculated.", 10)
+    summary += _pdf_text(
+        48, 40,
+        "Educational / preliminary only. Does not check capacity, buckling, connections, or code requirements.",
+        8,
+    )
+
+    charts = _pdf_text(48, 752, "BEAM RESPONSE DIAGRAMS", 16)
+    chart_specs = [
+        ("SHEAR V", result.shear_kip, force_unit, display_force, (0.25, 0.37, 0.43)),
+        ("MOMENT M", result.moment_kip_ft, moment_unit, display_moment, (0.65, 0.31, 0.14)),
+        ("DEFLECTION", result.deflection_in, deflection_unit, display_deflection, (0.35, 0.43, 0.20)),
+    ]
+    x_left, x_right = 65.0, 545.0
+    length = beam_length_ft(beam)
+    for chart_index, (title, raw_values, value_unit, convert, color) in enumerate(chart_specs):
+        box_top = 720.0 - chart_index * 225.0
+        box_bottom = box_top - 195.0
+        plot_left, plot_right = x_left + 40, x_right - 12
+        plot_bottom, plot_top = box_bottom + 25, box_top - 35
+        values = [convert(value) for value in raw_values]
+        low = min(0.0, *values)
+        high = max(0.0, *values)
+        if high == low:
+            high, low = max(1.0, high), min(-1.0, low)
+        padding = (high - low) * 0.1
+        low -= padding
+        high += padding
+        x_map = lambda x: plot_left + x / length * (plot_right - plot_left)
+        y_map = lambda value: plot_bottom + (value - low) / (high - low) * (plot_top - plot_bottom)
+        zero_y = y_map(0)
+        charts += f"{x_left:.1f} {box_bottom:.1f} 490 195 re S\n"
+        charts += _pdf_text(x_left + 8, box_top - 18, f"{title} ({value_unit})", 11)
+        charts += f"0.55 0.62 0.65 RG 0.7 w {plot_left:.1f} {zero_y:.1f} m {plot_right:.1f} {zero_y:.1f} l S\n"
+        curve = [(x_map(x), y_map(value)) for x, value in zip(result.xs_ft, values)]
+        if curve:
+            charts += f"q 0.82 0.85 0.83 rg {curve[0][0]:.2f} {zero_y:.2f} m\n"
+            charts += " ".join(f"{x:.2f} {y:.2f} l" for x, y in curve)
+            charts += f" {curve[-1][0]:.2f} {zero_y:.2f} l h f Q\n"
+            charts += f"{color[0]:.2f} {color[1]:.2f} {color[2]:.2f} RG 1.4 w "
+            charts += f"{curve[0][0]:.2f} {curve[0][1]:.2f} m\n"
+            charts += " ".join(f"{x:.2f} {y:.2f} l" for x, y in curve[1:])
+            charts += " S\n"
+        charts += _pdf_text(10, plot_top - 3, f"{high:.3g}", 8)
+        charts += _pdf_text(10, plot_bottom, f"{low:.3g}", 8)
+        charts += _pdf_text(plot_left, box_bottom + 7, f"0 {length_unit}", 8)
+        charts += _pdf_text(plot_right - 30, box_bottom + 7,
+                            f"{display_length(length):.3g} {length_unit}", 8)
+    charts += _pdf_text(
+        48, 28,
+        "Positive internal shear is upward on the left face; positive moment is sagging.", 8,
+    )
+    return _pdf_document([*input_pages, summary, charts])
 
 
 def resolve_loads(beam: BeamInput) -> tuple[Load, ...]:
@@ -326,6 +812,7 @@ class BeamDesigner(tk.Tk):
         self.section = CATALOG[self.section_name]
         self.include_self_weight = tk.BooleanVar(value=True)
         self.span_var = tk.StringVar(value="20")
+        self.deflection_limit_var = tk.StringVar(value="360")
         self.left_overhang_var = tk.StringVar(value="0")
         self.right_overhang_var = tk.StringVar(value="5")
         self.overhang_side = "right"
@@ -338,6 +825,8 @@ class BeamDesigner(tk.Tk):
             "direction": "-1",
         }]
         self.next_load_id = 2
+        self.last_analysis: tuple[BeamInput, BeamResult] | None = None
+        self.current_file_path: str | None = None
 
         self._build_style()
         self._build_ui()
@@ -359,6 +848,17 @@ class BeamDesigner(tk.Tk):
         style.configure("Yellow.TButton", background="#f2c439", foreground="#252d31")
 
     def _build_ui(self) -> None:
+        menu_bar = tk.Menu(self)
+        file_menu = tk.Menu(menu_bar, tearoff=False)
+        file_menu.add_command(label="Open...", accelerator="Cmd+O", command=self.open_beam)
+        file_menu.add_command(label="Save...", accelerator="Cmd+S", command=self.save_beam)
+        menu_bar.add_cascade(label="File", menu=file_menu)
+        self.configure(menu=menu_bar)
+        self.bind("<Command-o>", lambda _event: self.open_beam())
+        self.bind("<Command-s>", lambda _event: self.save_beam())
+        self.bind("<Control-o>", lambda _event: self.open_beam())
+        self.bind("<Control-s>", lambda _event: self.save_beam())
+
         top = ttk.Frame(self, style="Top.TFrame", height=72)
         top.pack(fill="x")
         top.pack_propagate(False)
@@ -382,7 +882,12 @@ class BeamDesigner(tk.Tk):
         ttk.Label(intro, text="BEAM ANALYSIS", font=("Arial Narrow", 9, "bold"),
                   foreground="#252d31").pack(anchor="w")
         ttk.Label(intro, text="Understand how your beam responds.", style="Title.TLabel").pack(side="left")
-        ttk.Button(intro, text="PRINT / SAVE PDF", command=self.export_pdf).pack(side="right")
+        actions = ttk.Frame(intro)
+        actions.pack(side="right")
+        ttk.Button(actions, text="EXPORT RESULTS CSV",
+                   command=self.export_results_csv).pack(side="left", padx=3)
+        ttk.Button(actions, text="CALCULATION SHEET PDF",
+                   command=self.export_calculation_sheet).pack(side="left", padx=3)
 
         disclaimer = tk.Frame(self, bg="#f0d3a2", highlightbackground="#70502d",
                               highlightthickness=1, padx=10, pady=7)
@@ -459,6 +964,8 @@ class BeamDesigner(tk.Tk):
         span_entry = ttk.Entry(basic, textvariable=self.span_var)
         span_entry.pack(fill="x", pady=(2, 6))
         span_entry.bind("<KeyRelease>", lambda _e: self.after_idle(self.update_results))
+
+        self._entry(basic, "Deflection limit (L / n)", self.deflection_limit_var)
 
         self.overhang_frame = self._section(basic, "OVERHANG")
         ttk.Label(self.overhang_frame, text="Side").pack(anchor="w")
@@ -744,6 +1251,7 @@ class BeamDesigner(tk.Tk):
     def load_example(self) -> None:
         self.support_var.set("Simply supported")
         self.span_var.set("20")
+        self.deflection_limit_var.set("360")
         self.section_var.set("W12x26")
         self.include_self_weight.set(True)
         self.loads = [{
@@ -758,6 +1266,184 @@ class BeamDesigner(tk.Tk):
         self.on_section_change()
         self._render_loads()
         self.update_results()
+
+    def _style_unit_buttons(self) -> None:
+        self.us_button.configure(bg="#f2c439" if self.unit == "us" else "#68747a",
+                                 fg="#252d31" if self.unit == "us" else "#f3eee2")
+        self.metric_button.configure(bg="#f2c439" if self.unit == "metric" else "#68747a",
+                                     fg="#252d31" if self.unit == "metric" else "#f3eee2")
+
+    def save_beam(self) -> None:
+        beam = self._current_beam()
+        errors = self.validate(beam)
+        if errors:
+            messagebox.showerror("Cannot save beam", "\n".join(errors), parent=self)
+            return
+        path = self.current_file_path or filedialog.asksaveasfilename(
+            parent=self,
+            title="Save Beam Designer file",
+            defaultextension=".beam.json",
+            filetypes=[("Beam Designer files", "*.beam.json"), ("JSON files", "*.json")],
+        )
+        if not path:
+            return
+        document = beam_to_document(
+            beam,
+            self.section_var.get(),
+            self.unit,
+            self.overhang_side_var.get(),
+        )
+        try:
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump(document, file, indent=2, allow_nan=False)
+                file.write("\n")
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Save failed", str(exc), parent=self)
+            return
+        self.current_file_path = path
+        messagebox.showinfo("Beam saved", f"Saved beam to:\n{path}", parent=self)
+
+    def open_beam(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Open Beam Designer file",
+            filetypes=[("Beam Designer files", "*.beam.json"), ("JSON files", "*.json")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                document = json.load(file)
+            beam, unit, section_name, overhang_side = beam_from_document(document)
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            messagebox.showerror("Open failed", str(exc), parent=self)
+            return
+
+        self.unit = unit
+        self.current_file_path = path
+        self._style_unit_buttons()
+        self.support_var.set({
+            "simple": "Simply supported",
+            "cantilever": "Cantilever",
+            "overhang": "Overhanging",
+        }[beam.support])
+        self.span_var.set(self._display_length(beam.span_ft))
+        self.left_overhang_var.set(self._display_length(beam.left_overhang_ft))
+        self.right_overhang_var.set(self._display_length(beam.right_overhang_ft))
+        self.overhang_side_var.set(overhang_side)
+        self.deflection_limit_var.set(f"{beam.deflection_limit_denominator:g}")
+        self.include_self_weight.set(beam.include_self_weight)
+        self.section_var.set(section_name)
+        self.section_name = section_name
+        self.section = beam.section
+        if section_name == "Custom":
+            self.custom_name.set(beam.section.name)
+            self.sx_var.set(self._display_section_modulus(beam.section.sx_in3))
+            self.ix_var.set(self._display_inertia(beam.section.ix_in4))
+            self.e_var.set(self._display_stress(beam.section.e_ksi))
+            self.fb_var.set(
+                "" if beam.section.fb_ksi is None else self._display_stress(beam.section.fb_ksi)
+            )
+            self.weight_var.set(self._display_line_load(beam.section.weight_kip_ft))
+
+        restored_loads = []
+        for index, load in enumerate(beam.loads, 1):
+            item = {"id": index, "direction": str(load.direction)}
+            if isinstance(load, PointLoad):
+                item.update({
+                    "type": "point",
+                    "magnitude": self._display_force(load.magnitude_kip),
+                    "start": self._display_length(load.position_ft),
+                })
+            else:
+                item.update({
+                    "type": "uniform",
+                    "magnitude": self._display_line_load(load.intensity_kip_ft),
+                    "start": self._display_length(load.start_ft),
+                    "end": self._display_length(load.end_ft),
+                })
+            restored_loads.append(item)
+        self.loads = restored_loads
+        self.next_load_id = len(restored_loads) + 1
+        self.on_section_change()
+        self._render_loads()
+        self.update_results()
+
+    def _display_length(self, feet: float) -> str:
+        value = feet if self.unit == "us" else feet / FT_PER_M
+        return f"{value:.8g}"
+
+    def _display_force(self, kip: float) -> str:
+        value = kip if self.unit == "us" else kip / KIP_PER_KN
+        return f"{value:.8g}"
+
+    def _display_line_load(self, kip_ft: float) -> str:
+        value = kip_ft if self.unit == "us" else kip_ft * FT_PER_M / KIP_PER_KN
+        return f"{value:.8g}"
+
+    def _display_section_modulus(self, in3: float) -> str:
+        value = in3 if self.unit == "us" else in3 * MM3_PER_IN3
+        return f"{value:.8g}"
+
+    def _display_inertia(self, in4: float) -> str:
+        value = in4 if self.unit == "us" else in4 * MM4_PER_IN4
+        return f"{value:.8g}"
+
+    def _display_stress(self, ksi: float) -> str:
+        value = ksi if self.unit == "us" else ksi / KSI_PER_MPA
+        return f"{value:.8g}"
+
+    def export_results_csv(self) -> None:
+        if self.last_analysis is None:
+            messagebox.showerror(
+                "Cannot export results", "Enter valid beam inputs before exporting.", parent=self
+            )
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export beam results",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+        )
+        if not path:
+            return
+        _, result = self.last_analysis
+        headers, rows = csv_rows(result, self.unit)
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerow(headers)
+                writer.writerows([[f"{value:.9g}" for value in row] for row in rows])
+        except OSError as exc:
+            messagebox.showerror("CSV export failed", str(exc), parent=self)
+            return
+        messagebox.showinfo("Export complete", f"Saved results to:\n{path}", parent=self)
+
+    def export_calculation_sheet(self) -> None:
+        if self.last_analysis is None:
+            messagebox.showerror(
+                "Cannot export calculation sheet",
+                "Enter valid beam inputs before exporting.",
+                parent=self,
+            )
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Save calculation sheet",
+            defaultextension=".pdf",
+            filetypes=[("PDF document", "*.pdf")],
+        )
+        if not path:
+            return
+        beam, result = self.last_analysis
+        try:
+            report = calculation_sheet_pdf(beam, result, self.unit)
+            with open(path, "wb") as file:
+                file.write(report)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("PDF export failed", str(exc), parent=self)
+            return
+        messagebox.showinfo("Export complete", f"Saved calculation sheet to:\n{path}", parent=self)
 
     def _number(self, text: str) -> float | None:
         try:
@@ -818,38 +1504,11 @@ class BeamDesigner(tk.Tk):
             section=self.section,
             loads=tuple(loads),
             include_self_weight=self.include_self_weight.get(),
+            deflection_limit_denominator=self._number(self.deflection_limit_var.get()) or 0.0,
         )
 
     def validate(self, beam: BeamInput) -> list[str]:
-        errors = []
-        length = beam_length_ft(beam)
-        if not math.isfinite(beam.span_ft) or beam.span_ft <= 0:
-            errors.append("Enter a span greater than zero.")
-        if beam.support == "overhang" and (
-            beam.left_overhang_ft < 0 or beam.right_overhang_ft < 0
-        ):
-            errors.append("Overhang lengths must be nonnegative.")
-        if beam.section.sx_in3 <= 0:
-            errors.append("Section modulus Sx must be greater than zero.")
-        if beam.section.ix_in4 <= 0:
-            errors.append("Moment of inertia Ix must be greater than zero.")
-        if beam.section.e_ksi <= 0:
-            errors.append("Elastic modulus E must be greater than zero.")
-        if beam.include_self_weight and beam.section.weight_kip_ft < 0:
-            errors.append("Section weight per length must be nonnegative.")
-        for i, load in enumerate(beam.loads, 1):
-            name = f"{'Point' if isinstance(load, PointLoad) else 'Uniform'} load {i}"
-            if isinstance(load, PointLoad):
-                if load.magnitude_kip <= 0:
-                    errors.append(f"{name}: enter a magnitude greater than zero.")
-                if load.position_ft < 0 or load.position_ft > length:
-                    errors.append(f"{name}: position must be within the beam.")
-            else:
-                if load.intensity_kip_ft <= 0:
-                    errors.append(f"{name}: enter an intensity greater than zero.")
-                if load.start_ft < 0 or load.end_ft > length or load.end_ft <= load.start_ft:
-                    errors.append(f"{name}: interval must be within the beam.")
-        return errors
+        return validate_beam(beam)
 
     def update_results(self) -> None:
         self._update_support_visibility()
@@ -858,6 +1517,7 @@ class BeamDesigner(tk.Tk):
         self.error_var.set("\n".join(errors))
         self.error_label.configure(height=0)
         if errors:
+            self.last_analysis = None
             for var in self.result_vars.values():
                 var.set("—")
             self.beam_canvas.delete("all")
@@ -868,6 +1528,7 @@ class BeamDesigner(tk.Tk):
             return
 
         result = solve_beam(beam)
+        self.last_analysis = (beam, result)
         force_unit = "kN" if self.unit == "metric" else "kip"
         moment_unit = "kN-m" if self.unit == "metric" else "kip-ft"
         defl_unit = "mm" if self.unit == "metric" else "in"
@@ -892,12 +1553,11 @@ class BeamDesigner(tk.Tk):
         self.result_vars["peak_deflection"].set(f"{to_defl(result.peak_deflection_in):.3f} {defl_unit}")
         self.result_vars["stress"].set(f"{to_stress(result.peak_stress_ksi):.3f} {stress_unit}")
 
-        limit_length_ft = beam.span_ft if beam.support in ("simple", "overhang") else beam.span_ft
-        limit_in = limit_length_ft * 12.0 / 360.0
+        limit_in = beam.span_ft * 12.0 / beam.deflection_limit_denominator
         ratio = result.peak_deflection_in / limit_in
         stress_ratio = result.peak_stress_ksi / beam.section.fb_ksi if beam.section.fb_ksi else None
         text = (
-            f"Deflection vs L/360: ratio {ratio:.3f} "
+            f"Deflection vs L/{beam.deflection_limit_denominator:g}: ratio {ratio:.3f} "
             f"(limit {to_defl(limit_in):.3f} {defl_unit}).\n"
         )
         if stress_ratio is not None:
@@ -1090,53 +1750,6 @@ class BeamDesigner(tk.Tk):
 
         canvas.bind("<Motion>", on_move)
         canvas.bind("<Leave>", on_leave)
-
-    def export_pdf(self) -> None:
-        path = filedialog.asksaveasfilename(
-            title="Save Beam Designer output",
-            defaultextension=".pdf",
-            filetypes=[("PDF document", "*.pdf"), ("PostScript", "*.ps")],
-        )
-        if not path:
-            return
-        if path.lower().endswith(".pdf"):
-            ps_path = path[:-4] + ".ps"
-            try:
-                self.postscript(file=ps_path, colormode="color")
-            except tk.TclError as exc:
-                messagebox.showerror("Export failed", str(exc))
-                return
-            if shutil.which("ps2pdf"):
-                try:
-                    subprocess.run(["ps2pdf", ps_path, path], check=True)
-                    if ps_path != path:
-                        import os
-                        os.unlink(ps_path)
-                except (OSError, subprocess.CalledProcessError) as exc:
-                    messagebox.showerror("PDF export failed", str(exc))
-                    return
-            elif shutil.which("pstopdf"):
-                try:
-                    subprocess.run(["pstopdf", "-o", path, ps_path], check=True)
-                    import os
-                    os.unlink(ps_path)
-                except (OSError, subprocess.CalledProcessError) as exc:
-                    messagebox.showerror("PDF export failed", str(exc))
-                    return
-            else:
-                messagebox.showinfo(
-                    "PostScript saved",
-                    f"No PDF converter is available. PostScript was saved as:\n{ps_path}",
-                )
-                return
-            messagebox.showinfo("Export complete", f"Saved PDF:\n{path}")
-        else:
-            try:
-                self.postscript(file=path, colormode="color")
-                messagebox.showinfo("Export complete", f"Saved PostScript:\n{path}")
-            except tk.TclError as exc:
-                messagebox.showerror("Export failed", str(exc))
-
 
 def main() -> None:
     app = BeamDesigner()

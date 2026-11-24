@@ -19,3 +19,6 @@
 - Asked to add CSV results export and a printable calculation-sheet PDF to spec.md.
 - Changed spec.md to require an Excel-friendly CSV with x, V, M, deflection, headers, and units, plus a calculation-sheet PDF button with inputs, diagrams, numerical checks, units, and disclaimer.
 - Worked: yes; both export requirements are documented and consistent with the preliminary/no-verdict scope.
+- Asked to implement the three spec changes: beam Save/Open, CSV result export, and a calculation-sheet PDF.
+- Changed beam_designer.py with a File menu and versioned JSON save/open, configurable and persisted L/n deflection limit, Excel-compatible CSV output, and a generated multi-page PDF containing inputs, checks, and response diagrams. Added round-trip/export tests.
+- Worked: yes; all eight unit tests pass, Python compilation and Tk startup pass, and GUI smoke tests successfully saved/opened a metric custom overhang beam and exported CSV/PDF.
